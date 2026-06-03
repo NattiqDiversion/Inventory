@@ -506,6 +506,41 @@ let entries = []; // {id, name, quantity, notes, photos:[dataURL]}
 let projectId = '';
 let nextId = 1;
 
+// ─── RESTORE DRAFT ───────────────────────────────────────────
+function checkForDraft() {
+  const draft = loadFromLocal();
+  if (!draft || !draft.entries || draft.entries.length === 0) return;
+  
+  const savedTime = new Date(draft.savedAt).toLocaleTimeString('en-CA', {hour:'2-digit',minute:'2-digit'});
+  const banner = document.createElement('div');
+  banner.id = 'draftBanner';
+  banner.style.cssText = 'background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 16px;margin:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;';
+  banner.innerHTML = `
+    <span>📋 You have a saved draft from ${savedTime} with ${draft.entries.length} item(s).</span>
+    <div style="display:flex;gap:8px;flex-shrink:0;">
+      <button onclick="restoreDraft()" style="background:#2fa8bc;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;">Restore</button>
+      <button onclick="discardDraft()" style="background:#fff;border:1px solid #ccc;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;">Discard</button>
+    </div>`;
+  const form = document.querySelector('.form-body') || document.body;
+  form.insertBefore(banner, form.firstChild);
+}
+
+function restoreDraft() {
+  const draft = loadFromLocal();
+  if (!draft) return;
+  entries = draft.entries;
+  nextId = Math.max(...entries.map(e=>e.id), 0) + 1;
+  renderList();
+  const banner = document.getElementById('draftBanner');
+  if (banner) banner.remove();
+}
+
+function discardDraft() {
+  clearLocal();
+  const banner = document.getElementById('draftBanner');
+  if (banner) banner.remove();
+}
+
 // ─── URL PARAMS ──────────────────────────────────────────────
 function loadURL() {
   const p = new URLSearchParams(window.location.search);
@@ -593,7 +628,103 @@ function addItem() {
   }, 50);
 }
 
+// ─── AUTO SAVE ───────────────────────────────────────────────
+function saveToLocal() {
+  try {
+    const key = 'nattiq_draft_' + (document.getElementById('projectName').value.trim() || projectId || 'draft');
+    localStorage.setItem(key, JSON.stringify({
+      entries, projectId, savedAt: new Date().toISOString()
+    }));
+  } catch(e) {}
+}
+
+function loadFromLocal() {
+  try {
+    const key = 'nattiq_draft_' + (document.getElementById('projectName').value.trim() || projectId || 'draft');
+    const saved = localStorage.getItem(key);
+    if (!saved) return false;
+    const data = JSON.parse(saved);
+    if (!data.entries || data.entries.length === 0) return false;
+    const hoursDiff = (new Date() - new Date(data.savedAt)) / 3600000;
+    if (hoursDiff > 24) return false;
+    return data;
+  } catch(e) { return false; }
+}
+
+function clearLocal() {
+  try {
+    const key = 'nattiq_draft_' + (document.getElementById('projectName').value.trim() || projectId || 'draft');
+    localStorage.removeItem(key);
+  } catch(e) {}
+}
+
+function checkForDraft() {
+  const draft = loadFromLocal();
+  if (!draft || !draft.entries || draft.entries.length === 0) return;
+  if (document.getElementById('draftBanner')) return;
+  const savedTime = new Date(draft.savedAt).toLocaleTimeString('en-CA', {hour:'2-digit', minute:'2-digit'});
+  const banner = document.createElement('div');
+  banner.id = 'draftBanner';
+  banner.style.cssText = 'background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 16px;margin:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;';
+  banner.innerHTML = `
+    <span>📋 Saved draft from ${savedTime} — ${draft.entries.length} item(s)</span>
+    <div style="display:flex;gap:8px;flex-shrink:0;">
+      <button onclick="restoreDraft()" style="background:#2fa8bc;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;">Restore</button>
+      <button onclick="discardDraft()" style="background:#fff;border:1px solid #ccc;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;">Discard</button>
+    </div>`;
+  const addZone = document.querySelector('.add-zone');
+  if (addZone) addZone.parentNode.insertBefore(banner, addZone);
+}
+
+function restoreDraft() {
+  const draft = loadFromLocal();
+  if (!draft) return;
+  entries = draft.entries;
+  nextId = Math.max(...entries.map(e => e.id), 0) + 1;
+  renderList();
+  renderSuggestions();
+  const banner = document.getElementById('draftBanner');
+  if (banner) banner.remove();
+}
+
+function discardDraft() {
+  clearLocal();
+  const banner = document.getElementById('draftBanner');
+  if (banner) banner.remove();
+}
+
 // ─── RENDER LIST ─────────────────────────────────────────────
+function saveToLocal() {
+  try {
+    const key = 'nattiq_draft_' + (projectName || 'draft');
+    localStorage.setItem(key, JSON.stringify({
+      entries, projectName, projectId, location, startDate, scName, savedAt: new Date().toISOString()
+    }));
+  } catch(e) {}
+}
+
+function loadFromLocal() {
+  try {
+    const key = 'nattiq_draft_' + (projectName || 'draft');
+    const saved = localStorage.getItem(key);
+    if (!saved) return false;
+    const data = JSON.parse(saved);
+    if (!data.entries || data.entries.length === 0) return false;
+    // Only restore if saved less than 24 hours ago
+    const savedAt = new Date(data.savedAt);
+    const hoursDiff = (new Date() - savedAt) / 3600000;
+    if (hoursDiff > 24) return false;
+    return data;
+  } catch(e) { return false; }
+}
+
+function clearLocal() {
+  try {
+    const key = 'nattiq_draft_' + (projectName || 'draft');
+    localStorage.removeItem(key);
+  } catch(e) {}
+}
+
 function renderList() {
   const tbody = document.getElementById('itemsList');
   if (entries.length === 0) {
@@ -748,6 +879,7 @@ function updateTotals() {
   const total = entries.reduce((s,e) => s + (parseInt(e.quantity)||0), 0);
   document.getElementById('totalCount').textContent = total;
   document.getElementById('barTotal').textContent = total;
+  saveToLocal();
 }
 
 // ─── SUBMIT ───────────────────────────────────────────────────
@@ -783,6 +915,10 @@ async function submitForm() {
     await sendViaForm(dataRows);
 
     document.getElementById('spinner').classList.remove('show');
+    clearLocal();
+    window._submitted = true;
+    clearLocal();
+    window._submitted = true;
     showSummary({ projectName, location, startDate, scName });
   } catch(err) {
     document.getElementById('spinner').classList.remove('show');
@@ -945,12 +1081,32 @@ printStyle.textContent = `
 `;
 document.head.appendChild(printStyle);
 
+// ─── WARN ON REFRESH ─────────────────────────────────────────
+window.addEventListener('beforeunload', function(e) {
+  if (entries.length > 0 && !window._submitted) {
+    e.preventDefault();
+    e.returnValue = 'You have unsaved inventory. Are you sure you want to leave?';
+    return e.returnValue;
+  }
+});
+
+// ─── WARN ON REFRESH ─────────────────────────────────────────
+window.addEventListener('beforeunload', function(e) {
+  if (entries.length > 0 && !window._submitted) {
+    e.preventDefault();
+    e.returnValue = 'You have unsaved inventory. Are you sure you want to leave?';
+    return e.returnValue;
+  }
+});
+
 // ─── INIT ─────────────────────────────────────────────────────
 loadURL();
+  setTimeout(checkForDraft, 500);
 renderList();
 renderSuggestions();
 if (!document.getElementById('startDate').value)
   document.getElementById('startDate').value = new Date().toISOString().split('T')[0];
+setTimeout(checkForDraft, 500);
 </script>
 </body>
 </html>
