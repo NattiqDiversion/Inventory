@@ -1099,6 +1099,22 @@ window.addEventListener('beforeunload', function(e) {
   }
 });
 
+// ─── PREVENT PULL TO REFRESH ────────────────────────────────
+let lastTouchY = 0;
+document.addEventListener('touchstart', function(e) {
+  lastTouchY = e.touches[0].clientY;
+}, { passive: false });
+
+document.addEventListener('touchmove', function(e) {
+  const touchY = e.touches[0].clientY;
+  const touchYDelta = touchY - lastTouchY;
+  lastTouchY = touchY;
+  // If scrolling down (positive delta) and at top of page, prevent
+  if (touchYDelta > 0 && window.scrollY === 0) {
+    e.preventDefault();
+  }
+}, { passive: false });
+
 // ─── INIT ─────────────────────────────────────────────────────
 loadURL();
   setTimeout(checkForDraft, 500);
