@@ -16,8 +16,8 @@
   --r:6px;--mono:'IBM Plex Mono',monospace;--body:'Inter',sans-serif;--cond:'Inter Tight',sans-serif;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-html{font-size:17px;-webkit-text-size-adjust:100%;overscroll-behavior-y:contain;}
-body{font-family:var(--body);background:var(--paper2);color:var(--ink);min-height:100dvh;overscroll-behavior-y:contain;}
+html{font-size:17px;-webkit-text-size-adjust:100%;}
+body{font-family:var(--body);background:var(--paper2);color:var(--ink);min-height:100dvh;}
 
 /* ── HEADER ── */
 .hdr{
@@ -502,41 +502,159 @@ const SUGGESTIONS = [
 ];
 
 // ─── STATE ───────────────────────────────────────────────────
-let entries = [];
+let entries = []; // {id, name, quantity, notes, photos:[dataURL]}
 let projectId = '';
 let nextId = 1;
 
-// ─── LOCAL STORAGE (AUTO SAVE) ───────────────────────────────
+// ─── RESTORE DRAFT ───────────────────────────────────────────
+function checkForDraft() {
+  const draft = loadFromLocal();
+  if (!draft || !draft.entries || draft.entries.length === 0) return;
+  
+  const savedTime = new Date(draft.savedAt).toLocaleTimeString('en-CA', {hour:'2-digit',minute:'2-digit'});
+  const banner = document.createElement('div');
+  banner.id = 'draftBanner';
+  banner.style.cssText = 'background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 16px;margin:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;';
+  banner.innerHTML = `
+    <span>📋 You have a saved draft from ${savedTime} with ${draft.entries.length} item(s).</span>
+    <div style="display:flex;gap:8px;flex-shrink:0;">
+      <button onclick="restoreDraft()" style="background:#2fa8bc;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;">Restore</button>
+      <button onclick="discardDraft()" style="background:#fff;border:1px solid #ccc;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;">Discard</button>
+    </div>`;
+  const form = document.querySelector('.form-body') || document.body;
+  form.insertBefore(banner, form.firstChild);
+}
+
+function restoreDraft() {
+  const draft = loadFromLocal();
+  if (!draft) return;
+  entries = draft.entries;
+  nextId = Math.max(...entries.map(e=>e.id), 0) + 1;
+  renderList();
+  const banner = document.getElementById('draftBanner');
+  if (banner) banner.remove();
+}
+
+function discardDraft() {
+  clearLocal();
+  const banner = document.getElementById('draftBanner');
+  if (banner) banner.remove();
+}
+
+// ─── URL PARAMS ──────────────────────────────────────────────
+function loadURL() {
+  const p = new URLSearchParams(window.location.search);
+  projectId = p.get('project') || '';
+  const map = {name:'projectName', location:'location', date:'startDate', sc:'scName'};
+  Object.entries(map).forEach(([k,id]) => {
+    const v = p.get(k);
+    if (v) {
+      const el = document.getElementById(id);
+      el.value = decodeURIComponent(v);
+      if (k !== 'sc') el.readOnly = true;
+    }
+  });
+  document.getElementById('projBadge').textContent = projectId || 'No Project ID';
+}
+
+// ─── SUGGESTIONS ─────────────────────────────────────────────
+function renderSuggestions() {
+  const usedNames = entries.map(e => e.name.toLowerCase());
+  const sel = document.getElementById('suggestSelect');
+  sel.innerHTML = '<option value="">— or pick from list —</option>';
+  SUGGESTIONS.forEach(group => {
+    const og = document.createElement('optgroup');
+    og.label = group.cat;
+    group.items.forEach(s => {
+      if (!usedNames.includes(s.toLowerCase())) {
+        const opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        og.appendChild(opt);
+      }
+    });
+    if (og.children.length > 0) sel.appendChild(og);
+  });
+}
+
+function filterDropdown(val) {
+  const usedNames = entries.map(e => e.name.toLowerCase());
+  const sel = document.getElementById('suggestSelect');
+  const v = val.toLowerCase();
+  sel.innerHTML = '<option value="">— or pick from list —</option>';
+  SUGGESTIONS.forEach(group => {
+    const og = document.createElement('optgroup');
+    og.label = group.cat;
+    group.items.forEach(s => {
+      if (!usedNames.includes(s.toLowerCase()) && (!v || s.toLowerCase().includes(v))) {
+        const opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        og.appendChild(opt);
+      }
+    });
+    if (og.children.length > 0) sel.appendChild(og);
+  });
+}
+
+function selectFromDropdown(val) {
+  if (!val) return;
+  document.getElementById('itemNameInput').value = val;
+  document.getElementById('suggestSelect').value = '';
+  addItem();
+}
+
+function useSuggestion(name) {
+  document.getElementById('itemNameInput').value = name;
+  addItem();
+}
+
+// ─── ADD ITEM ─────────────────────────────────────────────────
+function addItem() {
+  const input = document.getElementById('itemNameInput');
+  const name = input.value.trim();
+  if (!name) { showToast('Enter an item name', 'err'); input.focus(); return; }
+  if (entries.find(e => e.name.toLowerCase() === name.toLowerCase())) {
+    showToast(`${name} already in list`, 'err'); return;
+  }
+  entries.push({ id: nextId++, name, quantity: 1, notes: '', photos: [], method: '' });
+  input.value = '';
+  renderList();
+  renderSuggestions();
+  // scroll to new card
+  setTimeout(() => {
+    const cards = document.querySelectorAll('tr[id^="row_"]');
+    cards[cards.length-1]?.scrollIntoView({ behavior:'smooth', block:'center' });
+  }, 50);
+}
+
+// ─── AUTO SAVE ───────────────────────────────────────────────
 function saveToLocal() {
   try {
-    const key = 'nattiq_draft_' + (projectId || document.getElementById('projectName').value.trim() || 'draft');
+    const key = 'nattiq_draft_' + (document.getElementById('projectName').value.trim() || projectId || 'draft');
     localStorage.setItem(key, JSON.stringify({
       entries, projectId, savedAt: new Date().toISOString()
     }));
-    localStorage.setItem('nattiq_last_key', key);
   } catch(e) {}
 }
 
 function loadFromLocal() {
   try {
-    const k1 = 'nattiq_draft_' + (projectId || 'draft');
-    const k2 = localStorage.getItem('nattiq_last_key');
-    const key = localStorage.getItem(k1) ? k1 : k2;
-    if (!key) return false;
+    const key = 'nattiq_draft_' + (document.getElementById('projectName').value.trim() || projectId || 'draft');
     const saved = localStorage.getItem(key);
     if (!saved) return false;
     const data = JSON.parse(saved);
     if (!data.entries || data.entries.length === 0) return false;
-    if ((new Date() - new Date(data.savedAt)) / 3600000 > 24) return false;
+    const hoursDiff = (new Date() - new Date(data.savedAt)) / 3600000;
+    if (hoursDiff > 24) return false;
     return data;
   } catch(e) { return false; }
 }
 
 function clearLocal() {
   try {
-    const key = 'nattiq_draft_' + (projectId || document.getElementById('projectName').value.trim() || 'draft');
+    const key = 'nattiq_draft_' + (document.getElementById('projectName').value.trim() || projectId || 'draft');
     localStorage.removeItem(key);
-    localStorage.removeItem('nattiq_last_key');
   } catch(e) {}
 }
 
@@ -575,91 +693,47 @@ function discardDraft() {
   if (banner) banner.remove();
 }
 
-// ─── URL PARAMS ──────────────────────────────────────────────
-function loadURL() {
-  const p = new URLSearchParams(window.location.search);
-  projectId = p.get('project') || '';
-  const map = {name:'projectName', location:'location', date:'startDate', sc:'scName'};
-  Object.entries(map).forEach(([k,id]) => {
-    const v = p.get(k);
-    if (v) {
-      const el = document.getElementById(id);
-      el.value = decodeURIComponent(v);
-      if (k !== 'sc') el.readOnly = true;
-    }
-  });
-  document.getElementById('projBadge').textContent = projectId || 'No Project ID';
-}
-
-// ─── SUGGESTIONS ─────────────────────────────────────────────
-function renderSuggestions() {
-  const usedNames = entries.map(e => e.name.toLowerCase());
-  const sel = document.getElementById('suggestSelect');
-  sel.innerHTML = '<option value="">— or pick from list —</option>';
-  SUGGESTIONS.forEach(group => {
-    const og = document.createElement('optgroup');
-    og.label = group.cat;
-    group.items.forEach(s => {
-      if (!usedNames.includes(s.toLowerCase())) {
-        const opt = document.createElement('option');
-        opt.value = s; opt.textContent = s;
-        og.appendChild(opt);
-      }
-    });
-    if (og.children.length > 0) sel.appendChild(og);
-  });
-}
-
-function filterDropdown(val) {
-  const usedNames = entries.map(e => e.name.toLowerCase());
-  const sel = document.getElementById('suggestSelect');
-  const v = val.toLowerCase();
-  sel.innerHTML = '<option value="">— or pick from list —</option>';
-  SUGGESTIONS.forEach(group => {
-    const og = document.createElement('optgroup');
-    og.label = group.cat;
-    group.items.forEach(s => {
-      if (!usedNames.includes(s.toLowerCase()) && (!v || s.toLowerCase().includes(v))) {
-        const opt = document.createElement('option');
-        opt.value = s; opt.textContent = s;
-        og.appendChild(opt);
-      }
-    });
-    if (og.children.length > 0) sel.appendChild(og);
-  });
-}
-
-function selectFromDropdown(val) {
-  if (!val) return;
-  document.getElementById('itemNameInput').value = val;
-  document.getElementById('suggestSelect').value = '';
-  addItem();
-}
-
-// ─── ADD ITEM ─────────────────────────────────────────────────
-function addItem() {
-  const input = document.getElementById('itemNameInput');
-  const name = input.value.trim();
-  if (!name) { showToast('Enter an item name', 'err'); input.focus(); return; }
-  if (entries.find(e => e.name.toLowerCase() === name.toLowerCase())) {
-    showToast(name + ' already in list', 'err'); return;
-  }
-  entries.push({ id: nextId++, name, quantity: 1, notes: '', photos: [], method: '' });
-  input.value = '';
-  renderList();
-  renderSuggestions();
-  saveToLocal();
-  setTimeout(() => {
-    const cards = document.querySelectorAll('tr[id^="row_"]');
-    if (cards.length) cards[cards.length-1].scrollIntoView({ behavior:'smooth', block:'center' });
-  }, 50);
-}
-
 // ─── RENDER LIST ─────────────────────────────────────────────
+function saveToLocal() {
+  try {
+    const key = 'nattiq_draft_' + (projectName || 'draft');
+    localStorage.setItem(key, JSON.stringify({
+      entries, projectName, projectId, location, startDate, scName, savedAt: new Date().toISOString()
+    }));
+  } catch(e) {}
+}
+
+function loadFromLocal() {
+  try {
+    const key = 'nattiq_draft_' + (projectName || 'draft');
+    const saved = localStorage.getItem(key);
+    if (!saved) return false;
+    const data = JSON.parse(saved);
+    if (!data.entries || data.entries.length === 0) return false;
+    // Only restore if saved less than 24 hours ago
+    const savedAt = new Date(data.savedAt);
+    const hoursDiff = (new Date() - savedAt) / 3600000;
+    if (hoursDiff > 24) return false;
+    return data;
+  } catch(e) { return false; }
+}
+
+function clearLocal() {
+  try {
+    const key = 'nattiq_draft_' + (projectName || 'draft');
+    localStorage.removeItem(key);
+  } catch(e) {}
+}
+
 function renderList() {
   const tbody = document.getElementById('itemsList');
   if (entries.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📋</div><div class="empty-text">No items yet — type a name above or pick from the list</div></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5">
+      <div class="empty-state">
+        <div class="empty-icon">📋</div>
+        <div class="empty-text">No items yet — type a name above or pick from the list</div>
+      </div>
+    </td></tr>`;
     updateTotals();
     return;
   }
@@ -669,7 +743,7 @@ function renderList() {
       <td class="td-qty-cell">
         <div class="qty-stepper">
           <button class="qty-btn" onclick="changeQty(${e.id},-1)">−</button>
-          <input class="qty-num" id="qty_${e.id}" type="number" min="0" value="${e.quantity}"
+          <input class="qty-num" type="number" min="0" value="${e.quantity}"
             oninput="setQty(${e.id},this.value)" onblur="cleanQty(${e.id},this)"/>
           <button class="qty-btn" onclick="changeQty(${e.id},1)">+</button>
         </div>
@@ -693,7 +767,7 @@ function renderList() {
           oninput="setNotes(${e.id},this.value)">${e.notes}</textarea>
       </td>
       <td class="td-method-cell">
-        <select class="method-select ${e.method ? 'm-'+(({'Re-use':'reuse','Disposal':'dispose','Donate':'donate','Store':'store'})[e.method]||'') : ''}"
+        <select class="method-select ${e.method ? 'm-'+e.method.toLowerCase().replace(/[^a-z]/g,'').replace('reuse','reuse').replace('disposal','dispose').replace('donate','donate').replace('store','store') : ''}"
           onchange="setMethod(${e.id},this.value)">
           <option value="">—</option>
           <option value="Re-use"   ${e.method==='Re-use'   ?'selected':''}>Re-use</option>
@@ -705,28 +779,24 @@ function renderList() {
       <td class="td-del">
         <div class="remove-btn" onclick="removeEntry(${e.id})">✕</div>
       </td>
-    </tr>`).join('');
+    </tr>
+  `).join('');
   updateTotals();
 }
 
 // ─── ENTRY MUTATIONS ─────────────────────────────────────────
 function removeEntry(id) {
   entries = entries.filter(e => e.id !== id);
-  renderList(); renderSuggestions(); saveToLocal();
+  renderList();
+  renderSuggestions();
 }
 
 function changeQty(id, delta) {
   const e = entries.find(e => e.id === id);
   if (!e) return;
   e.quantity = Math.max(0, (parseInt(e.quantity)||0) + delta);
-  // Update just the qty input directly - no full re-render needed
-  const inp = document.getElementById('qty_' + id);
-  if (inp) {
-    inp.value = e.quantity;
-    // Force repaint on iOS/Android
-    inp.style.opacity = '0.99';
-    setTimeout(() => { inp.style.opacity = '1'; }, 10);
-  }
+  const inp = document.querySelector(`#card_${id} .qty-num`);
+  if (inp) inp.value = e.quantity;
   updateTotals();
 }
 
@@ -737,23 +807,26 @@ function setQty(id, v) {
 
 function cleanQty(id, el) {
   const e = entries.find(e => e.id === id);
-  if (e) { e.quantity = Math.max(0, parseInt(e.quantity)||0); el.value = e.quantity; updateTotals(); }
+  if (e) {
+    e.quantity = Math.max(0, parseInt(e.quantity)||0);
+    el.value = e.quantity;
+    updateTotals();
+  }
 }
 
 function setNotes(id, v) {
   const e = entries.find(e => e.id === id);
-  if (e) { e.notes = v; saveToLocal(); }
+  if (e) e.notes = v;
 }
 
 function setMethod(id, v) {
   const e = entries.find(e => e.id === id);
   if (!e) return;
   e.method = v;
-  const sel = document.querySelector('#row_' + id + ' .method-select');
+  const sel = document.querySelector(`#row_${id} .method-select`);
   if (!sel) return;
   const map = {'Re-use':'reuse','Disposal':'dispose','Donate':'donate','Store':'store'};
   sel.className = 'method-select' + (v && map[v] ? ' m-'+map[v] : '');
-  saveToLocal();
 }
 
 function compressPhoto(file, maxWidth, quality) {
@@ -777,6 +850,7 @@ function addPhotos(id, files) {
   const e = entries.find(e => e.id === id);
   if (!e) return;
   Array.from(files).forEach(async f => {
+    // Compress to max 800px wide, 0.6 quality — keeps files under 100KB
     const compressed = await compressPhoto(f, 400, 0.4);
     e.photos.push(compressed);
     const row = document.getElementById('photosRow_' + id);
@@ -792,13 +866,12 @@ function addPhotos(id, files) {
         <input type="file" id="fi_${id}" accept="image/*" capture="environment"
           multiple onchange="addPhotos(${id},this.files)"/>`;
     }
-    saveToLocal();
   });
 }
 
 function removePhoto(id, pi) {
   const e = entries.find(e => e.id === id);
-  if (e) { e.photos.splice(pi, 1); renderList(); saveToLocal(); }
+  if (e) { e.photos.splice(pi, 1); renderList(); }
 }
 
 // ─── TOTALS ───────────────────────────────────────────────────
@@ -838,8 +911,12 @@ async function submitForm() {
         notes:      e.notes || '',
       }));
 
+    // Use a hidden form POST to bypass CORS
     await sendViaForm(dataRows);
+
     document.getElementById('spinner').classList.remove('show');
+    clearLocal();
+    window._submitted = true;
     clearLocal();
     window._submitted = true;
     showSummary({ projectName, location, startDate, scName });
@@ -853,30 +930,48 @@ async function submitForm() {
 // ─── SEND TO APPS SCRIPT ─────────────────────────────────────
 async function sendViaForm(rows) {
   for (const row of rows) {
+    // Step 1: Send row data WITHOUT photos
     const payload = {
-      timestamp: row.timestamp, projectId: row.projectId,
-      projectName: row.projectName, scName: row.scName,
-      itemType: row.itemType, quantity: row.quantity,
-      condition: row.condition || '', floorArea: row.floorArea,
-      photoCount: row.photos ? row.photos.length : 0, notes: row.notes || '',
+      timestamp:   row.timestamp,
+      projectId:   row.projectId,
+      projectName: row.projectName,
+      scName:      row.scName,
+      itemType:    row.itemType,
+      quantity:    row.quantity,
+      condition:   row.condition || '',
+      floorArea:   row.floorArea,
+      photoCount:  row.photos ? row.photos.length : 0,
+      notes:       row.notes || '',
     };
     const fd1 = new FormData();
     fd1.append('data', JSON.stringify(payload));
     await fetch(SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: fd1 });
     await new Promise(r => setTimeout(r, 500));
 
+    // Step 2: Send each photo one at a time as its own small request
     for (let i = 0; i < (row.photos || []).length; i++) {
       const photo = row.photos[i];
       if (!photo || photo.length < 100) continue;
+
+      // Split base64 into chunks of 500KB max
       const chunkSize = 500000;
       const chunks = [];
-      for (let c = 0; c < photo.length; c += chunkSize) chunks.push(photo.slice(c, c + chunkSize));
+      for (let c = 0; c < photo.length; c += chunkSize) {
+        chunks.push(photo.slice(c, c + chunkSize));
+      }
+
       for (let ci = 0; ci < chunks.length; ci++) {
         const photoFd = new FormData();
         photoFd.append('data', JSON.stringify({
-          _action: 'addPhoto', projectName: row.projectName, itemType: row.itemType,
-          timestamp: row.timestamp, photoIndex: i, chunkIndex: ci,
-          totalChunks: chunks.length, photoData: chunks[ci], mimeType: 'image/jpeg',
+          _action:     'addPhoto',
+          projectName: row.projectName,
+          itemType:    row.itemType,
+          timestamp:   row.timestamp,
+          photoIndex:  i,
+          chunkIndex:  ci,
+          totalChunks: chunks.length,
+          photoData:   chunks[ci],
+          mimeType:    'image/jpeg',
         }));
         await fetch(SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: photoFd });
         await new Promise(r => setTimeout(r, 400));
@@ -892,39 +987,53 @@ function showSummary({ projectName, location, startDate, scName }) {
   document.getElementById('sumLocation').textContent = location || '—';
   document.getElementById('sumDate').textContent     = startDate  || '—';
   document.getElementById('sumSC').textContent       = scName     || '—';
+
   const total = entries.reduce((s,e) => s + (parseInt(e.quantity)||0), 0);
   document.getElementById('sumTotal').textContent = total;
+
   const tbody = document.getElementById('sumTableBody');
-  tbody.innerHTML = entries.filter(e => parseInt(e.quantity) > 0).map(e => `
-    <tr>
-      <td class="td-item">${e.name}</td>
-      <td class="td-qty">${e.quantity}</td>
-      <td class="td-photo">
-        ${e.photos.length > 0
-          ? '<div class="sum-photos-grid">' + e.photos.map(src => '<img class="sum-photo" src="' + src + '" onclick="openLightbox('' + src + '')" alt=""/>').join('') + '</div>'
-          : '<span class="no-photo-cell">No picture</span>'}
-      </td>
-      <td class="td-method">${e.method || ''}</td>
-      <td class="td-notes">${e.notes || ''}</td>
-    </tr>`).join('');
+  tbody.innerHTML = entries
+    .filter(e => parseInt(e.quantity) > 0)
+    .map(e => `
+      <tr>
+        <td class="td-item">${e.name}</td>
+        <td class="td-qty">${e.quantity}</td>
+        <td class="td-photo">
+          ${e.photos.length > 0
+            ? `<div class="sum-photos-grid">
+                ${e.photos.map(src =>
+                  `<img class="sum-photo" src="${src}" onclick="openLightbox('${src}')" alt=""/>`
+                ).join('')}
+              </div>`
+            : '<span class="no-photo-cell">No picture</span>'}
+        </td>
+        <td class="td-method">${e.method || ''}</td>
+        <td class="td-notes">${e.notes || '<span class="sum-empty-notes"></span>'}</td>
+      </tr>`).join('');
+
   document.getElementById('summaryScreen').classList.add('show');
   document.getElementById('summaryScreen').scrollTop = 0;
 }
 
 // ─── PRINT ────────────────────────────────────────────────────
-function printSummary() { window.print(); }
+function printSummary() {
+  window.print();
+}
 
 // ─── RESET ────────────────────────────────────────────────────
 function resetForm() {
-  entries = []; nextId = 1;
+  entries = [];
+  nextId = 1;
   ['projectName','location','scName'].forEach(id => {
     const el = document.getElementById(id);
-    el.value = ''; el.readOnly = false;
+    el.value = '';
+    el.readOnly = false;
   });
   document.getElementById('startDate').value = '';
   document.getElementById('startDate').readOnly = false;
   document.getElementById('summaryScreen').classList.remove('show');
-  renderList(); renderSuggestions();
+  renderList();
+  renderSuggestions();
   window.scrollTo({ top:0, behavior:'smooth' });
 }
 
@@ -948,28 +1057,38 @@ function showToast(msg, type='') {
 
 // ─── PRINT STYLES ─────────────────────────────────────────────
 const printStyle = document.createElement('style');
-printStyle.textContent = `@media print {
-  .hdr,.proj-block,.add-zone,.inv-table-wrap,.submit-bar,.new-entry-bar,.sum-actions,.spacer{display:none!important;}
-  .summary-screen{display:block!important;position:static!important;overflow:visible!important;}
-  .sum-header{position:static!important;box-shadow:none!important;}
-  .sum-header .sum-actions{display:none!important;}
-  .sum-table-wrap{padding:0!important;}
-  .sum-photo{width:80px!important;height:80px!important;}
-  body{background:#fff!important;}
-  *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}
-}`;
+printStyle.textContent = `
+  @media print {
+    .hdr, .proj-block, .add-zone, .inv-table-wrap,
+    .submit-bar, .new-entry-bar, .sum-actions,
+    .items-list, .spacer { display:none!important; }
+    .summary-screen {
+      display:block!important;
+      position:static!important;
+      overflow:visible!important;
+    }
+    .sum-header {
+      position:static!important;
+      box-shadow:none!important;
+    }
+    .sum-header .sum-actions { display:none!important; }
+    .sum-table-wrap { padding:0!important; }
+    .sum-photo { width:80px!important; height:80px!important; }
+    .new-entry-bar { display:none!important; }
+    body { background:#fff!important; }
+    * { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important; }
+  }
+`;
 document.head.appendChild(printStyle);
 
-// ─── PREVENT PULL TO REFRESH ─────────────────────────────────
-let lastTouchY = 0;
-document.addEventListener('touchstart', function(e) {
-  lastTouchY = e.touches[0].clientY;
-}, { passive: false });
-document.addEventListener('touchmove', function(e) {
-  const delta = e.touches[0].clientY - lastTouchY;
-  lastTouchY = e.touches[0].clientY;
-  if (delta > 0 && window.scrollY === 0) e.preventDefault();
-}, { passive: false });
+// ─── WARN ON REFRESH ─────────────────────────────────────────
+window.addEventListener('beforeunload', function(e) {
+  if (entries.length > 0 && !window._submitted) {
+    e.preventDefault();
+    e.returnValue = 'You have unsaved inventory. Are you sure you want to leave?';
+    return e.returnValue;
+  }
+});
 
 // ─── WARN ON REFRESH ─────────────────────────────────────────
 window.addEventListener('beforeunload', function(e) {
@@ -982,14 +1101,12 @@ window.addEventListener('beforeunload', function(e) {
 
 // ─── INIT ─────────────────────────────────────────────────────
 loadURL();
+  setTimeout(checkForDraft, 500);
 renderList();
 renderSuggestions();
 if (!document.getElementById('startDate').value)
   document.getElementById('startDate').value = new Date().toISOString().split('T')[0];
-setTimeout(checkForDraft, 800);
-setInterval(function() {
-  if (entries.length > 0 && !window._submitted) saveToLocal();
-}, 3000);
+setTimeout(checkForDraft, 500);
 </script>
 </body>
 </html>
